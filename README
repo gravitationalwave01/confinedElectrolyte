@@ -1,0 +1,45 @@
+PURPOSE:
+
+
+This code is used to study the electric double layer at the level of Renormalized Gaussian Fluctuation Theory (RGFT).
+The details of the theory can be found here:
+ZG Wang, Phys. Rev. E 81, 021501 (2010)
+
+In particular, this code computes the ion profile, pressure, self-energy, and electric potential of an
+ionic solution confined between two oppositely-charged plates.
+This code /does not/ solve the full RGFT equations; rather, it solves them under the WKB approximation 
+as described here:
+R. Wang and ZG Wang J. Chem. Phys. 139, 124702 (2013)
+
+--------------------------------------------
+
+DEPENDENCIES:
+
+Please make sure that you have a c++ compiler, LAPACK, and BLAS installed.
+I recommend using openblas, however if you wish to use netblas (or other)
+you must modify the compilation command accordindly.
+
+--------------------------------------------
+
+INSTALLATION:
+
+Compile with the command 
+
+	g++ -I/usr/lib -llapack -lopenblas full_WKB.cpp PB_solver.cpp -o ./full_WKB
+
+NOTE: /usr/lib is where lapack and blas are usually installed - please correct 
+	this if your installation is different.
+
+NOTE: I recommend using openblas, but linking to -lblas is also fine.
+
+
+--------------------------------------------
+
+
+USAGE:
+
+At the moment, all physical parameters of the system are hardcoded in full_WKB.cpp.
+To set the physical dimensions, charges, etc of your system please edit the structure sys and recompile.
+Outputs are stored in the directory ./output
+
+
