@@ -2,6 +2,7 @@
 #include<fstream>
 #include<math.h>
 #include<sstream>
+#include "PB_solver.h"
 
 #define _USE_MATH_DEFINES
 
@@ -11,6 +12,8 @@
 //Then we plug the varying ionic strength into the resulting epxression for the greens function
 
 
+// compile with:
+// g++ -I/usr/lib -llapack -lopenblas full_WKB.cpp PB_solver.cpp -o ./full_WKB
 extern "C" void dgtsv_(int* N, int* NRHS, double* DL, double* D, double* DU, double* B, int* LDB, int* INFO);
 
 double Jkx(double x, double kappa,double D, double f)
@@ -18,7 +21,7 @@ double Jkx(double x, double kappa,double D, double f)
 	double ans = 0; //This represents the sum (eq 7 in Rui's 2013 paper). We include enough terms in the sum so that it converges
 	double oldJkx = 1;
 	int m=1;
-	while (m < 10 || fabs(ans-oldJkx) > 1.0e-4)
+	while (m < 10 || fabs(ans-oldJkx) > 1.0e-9)
 	{
 		//std::cout << m*D + 2*x << std::endl;
 		oldJkx = ans;
@@ -26,9 +29,9 @@ double Jkx(double x, double kappa,double D, double f)
 			ans += pow(f,m)*2.0/(m*D) * exp(-kappa * m * D);
 		else
 			ans += pow(f,m)*(exp(-kappa*(m*D+2.0*x))/(m*D+2*x) + exp(-kappa*(m*D-2.0*x))/(m*D-2*x));
-		m=m+1;
+		m+=1;
 	}
-	std::cout << "m is " << m << "  J is " << ans << std::endl;
+	//std::cout << "m is " << m << "  J is " << ans << std::endl;
 	return ans;
 }
 
@@ -36,15 +39,19 @@ double Jkx(double x, double kappa,double D, double f)
 
 //This function computes the charging integral F_fl:
 //everything in this function is unitless
-double Ffl(double x, double kappa, double D)
+double Ffl(double x, double kappa, double D, double f)
 {
 	double Ffl = 0;
-	double numsteps = 5.0;
+	double numsteps = 200.0;
 	double dalpha = 1.0/(numsteps+1.0);
+	int counter =0;
 	for (double alpha = 0; alpha < 1; alpha += dalpha)
 	{
-		Ffl += Jkx(x,alpha*kappa,D,-1)*alpha - alpha*kappa;
+		counter++;
+		if (counter%1000==0) std::cout << " ........... in FFL, counter is " << counter << std::endl; 
+		Ffl += Jkx(x,alpha*kappa,D,f)*alpha - alpha*kappa;
 	}
+    std::cout << "FFL term is " << Ffl << std::endl;
 	return kappa*kappa * Ffl * dalpha / (4*M_PI);
 }	
 
@@ -54,57 +61,67 @@ double Ffl(double x, double kappa, double D)
 //between the plates (evenly spaced)
 double getpos(int i, int num_points, double D) //units of lb
 {
-	return (-D/2.0 + (double)(i+1) / (num_points+2) * D);
+	return (-D/2.0 + (double)(i+1) / ((double)num_points+1.) * D);
 }
 	
+//returns true of the given index is within a half-diameter of the wall
+bool HS(int index, int num_points, double D, double diam)
+{
+	return (D/2. - fabs(getpos(index,num_points,D)) < diam/2.);
+}
+
 int main()
 {
-	//Start by initializing some constants:
-	double z1 = 1.; //cation valancy 
-	double z2 = 1.; //anion valancy
-	double c1b = .1; //bulk concentration of cations (M)
-	double c2b = .1; //bulk concentration of anions (M)
-	double kb = 1.3806e-23; //boltzmann constant (m^2kgs^-2K^-1)
-	double T = 250.; //temperature (K)
-	double beta = 1/(kb*T); // 1/kT @ T=300K (1/J)
-	double dielec = 80. * 8.85418e-12; // dielectric constant(F/m) for water
-	double e_charge = 1.60218e-19; //electron charge (coulombs)
-	double Av = 6.022e23; //avogadro's number
-	double lb = beta*pow(e_charge,2)/(4*M_PI*dielec); //bjerrum length (m)
+	//Start by initializing some system parameters and constants:
+    double kb = 1.3806e-23; //boltzmann constant (m^2kgs^-2K^-1)
+    double T = 300.; //temperature (K)
+    double beta = 1/(kb*T); // 1/kT @ T=300K (1/J)
+    double dielec = 80. * 8.85418e-12; // dielectric constant(F/m) for water
+    double e_charge = 1.60218e-19; //electron charge (coulombs)
+    double Av = 6.022e23; //avogadro's number
+	
+	params sys;
+    sys.z1 = 1.; //cation valancy 
+    sys.z2 = 1.; //anion valancy
+	sys.diam1 = 5.e-10; //diameter of ions [for repulsion from wall]
+	sys.diam2 = 5.e-10;
+    sys.c1b = 1.e-3; //bulk concentration of cations (M)
+    sys.c2b = 1.e-3; //bulk concentration of anions (M)
+    sys.lb = beta*pow(e_charge,2)/(4*M_PI*dielec); //bjerrum length in bulk (m)
+	sys.sigma = 0.; //plate surface charge (C/m^2) 
+	sys.D = 3.e-9; //plate seperation (m)
 
-	// make the concentrations unitless	
-	c1b *= 1.e3 * Av * lb*lb*lb;
-	c2b *= 1.e3 * Av * lb*lb*lb;
-	std::cout << "the bulk concentration is " << c1b << std::endl;
+	//First: make all physical quantities unitless
+	// make the concentrations unitless 
+    sys.c1b *= 1.e3 * Av * sys.lb*sys.lb*sys.lb;
+    sys.c2b *= 1.e3 * Av * sys.lb*sys.lb*sys.lb;
 
-	double* cation; //concentration of cations (unitless)
-	double* anion; //concentration of anions (unitless)
-	int num_points; //spatial discretization
-	double* psi; //electrostatic potential
-	double* greens; //spatial greens function (unitless)
-	double* self_energy; //spatial self energy (unitless)
-	double* kappa; //spatial inverse screening length (unitless)
+	//make the charge density unitless:
+	sys.sigma *= pow(sys.lb,2) / e_charge;
 
+	//make seperation and ion radii dimensionless:
+	sys.D /= sys.lb;
+	sys.diam1 /= sys.lb;
+	sys.diam2 /= sys.lb;
 
-	//let's test linking to lapack:
-	double *d,*du,*dl,*b;
-	int dim = 10;
-	int b_row = dim;
-	int b_col = 1;
-	int info = 0;
-	for (int i=0;i<dim-1;i++)
-	{
-		d[i] = 2.;
-		du[i] = -1.;
-		dl[i] = -1.;
-		b[i] = 1;
-	}
-	d[dim-1]=2.;
-	b[dim-1]=1.;
+//	std::cout << "lb is " << sys.lb << std::endl;
+//	std::cout << "D is " << sys.D << std::endl;
+//	std::cout << "diameter is " << sys.diam1 << std::endl;
 
-	dgtsv_(&dim, &b_row, dl, d, du, b, &b_col, &info);
-	std::cout << "SUCCESS!" << std::endl;
-	exit(0);	
+	int num_points=10000; //spatial discretization
+
+	profile p;
+	p.rho1 = new double[num_points];
+	p.rho2 = new double[num_points];
+	p.greens = new double[num_points];
+	p.psi = new double[num_points];
+	p.self_energy = new double[num_points];
+	p.kappa2 = new double[num_points];
+
+	double epsilS = 80.;
+	double epsilP = 1.;
+	double kappab2 = 4*M_PI*(sys.z1*sys.z1 * sys.c1b + sys.z2*sys.z2 * sys.c2b); //bulk inverse screening length 
+
 
 	//For each plate seperation D we will:
 	//1) guess a greens function by assuming kappa = kappab everywhere
@@ -115,62 +132,122 @@ int main()
 	//5) compute the resulting free energy per area G
 	//6) compute the resulting pressure dG/dD
 
-	for (double D = 2.; D < 40; D += 5.) //D is unitless (multiples of lb)
+	FILE* fenergy;
+	fenergy = fopen("./output/pressure/rep_image/total_energy.dat","w");
+	fprintf(fenergy,"seperation    energy \n");
+	double sigma_init = sys.sigma;
+	double c1b_init = sys.c1b;
+	int cursig = 0;
+	double f = (epsilS - epsilP)/(epsilS + epsilP);
+	//for (sys.D = 1.; sys.D < 30; sys.D += 1.) //D is unitless (multiples of lb)
+	//for (sys.sigma = -sigma_init*10; sys.sigma < sigma_init * 10; sys.sigma += sigma_init*0.1)
+    for (sys.D = 0.7; sys.D < 20; sys.D += 0.1)
 	{
+        std::cout << "D is " << sys.D << std::endl;
 		std::stringstream ss;
-		ss << "ion_profile_D" << D;
-		std::ofstream output;
-		output.open(ss.str().c_str());
-		num_points = 1000;
-		cation = new double[num_points];
-		anion = new double[num_points];
-		greens = new double[num_points];
-		psi = new double[num_points];
-		self_energy = new double[num_points];
-		kappa = new double[num_points];
-		double epsilS = 80;
-		double epsilP = 2.5;
-		double f = (epsilS - epsilP)/(epsilS + epsilP);
-		double kappab = sqrt(4*M_PI*(z1*z1 * c1b + z2*z2 * c2b)); //bulk inverse screening length 
+		ss << "./output/pressure/rep_image/ion_profile_D" << cursig << ".dat" ;
+		cursig++;
+		FILE* output;
+		output = fopen(ss.str().c_str(),"w");
+		fprintf(output,"pos          rho1           rho2           psi           u\n");
 		
 		//first guess:
 		for (int i=0;i<num_points;i++)
 		{
-			kappa[i] = kappab; 
-			self_energy[i] = 0.5*(Jkx(getpos(i,num_points,D),kappab,D,f) - kappab); 
-			double tmp = c1b * exp(-0.5*z1*z1*lb*kappab-self_energy[i]);
-			cation[i] = tmp;
-			anion[i] = c2b * exp(-0.5*z2*z2*lb*kappab-self_energy[i]);
-			psi[i] = 0;
+			p.kappa2[i] = kappab2; 
+			p.self_energy[i] = 0.5*(Jkx(getpos(i,num_points,sys.D),sqrt(kappab2),sys.D,f) - sqrt(kappab2));
+			if (HS(i,num_points,sys.D,sys.diam1))
+				p.rho1[i]=0;
+			else 
+				p.rho1[i] = sys.c1b * exp(-0.5*sys.z1*sys.z1*sqrt(kappab2)-p.self_energy[i]);
+			
+			if (HS(i,num_points,sys.D,sys.diam2))
+				p.rho2[i]=0;
+			else 
+				p.rho2[i] = sys.c2b * exp(-0.5*sys.z2*sys.z2*sqrt(kappab2)-p.self_energy[i]);
+			
+			p.psi[i] = 0;
 		}
 		
 		//Now we iterate:
 		double error = 1.;
-		while (error > 1.e-8)
+		int counter =0;
+		while (error > 1.e-12 || counter < 5)
 		{
-			std::cout << error << std::endl;
+		    counter++;
+/*
+		std::stringstream fuck;
+		fuck << "./output/debug" << counter  << ".out";
+		FILE* debug;
+		debug = fopen(fuck.str().c_str(),"w");
+		fprintf(debug,"pos  rho1   rho2   kappa2  u     psi\n");
+
+			fprintf(debug," ..... new iteration .......\n");
+*/
+			PB_solver(&sys,&p,num_points);
 			error = 0;
 			for (int i=0;i<num_points;i++)
 			{
+				double tmp = 4*M_PI*(sys.z1*sys.z1*p.rho1[i]+sys.z2*sys.z2*p.rho2[i]);
+				error += pow(p.kappa2[i] - tmp, 2);
+				p.kappa2[i] = tmp;
+				p.self_energy[i] = 0.5*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i])); 
+				if (HS(i,num_points,sys.D,sys.diam1))
+					p.rho1[i]=0;
+				else 
+					p.rho1[i] = sys.c1b * exp(-0.5*sys.z1*sys.z1*sqrt(kappab2) - sys.z2*p.psi[i]- p.self_energy[i]);;
 			
-				kappa[i] = sqrt(4*M_PI*(z1*z1*cation[i]+z2*z2*anion[i]));
-				self_energy[i] = 0.5*(Jkx(getpos(i,num_points,D),kappa[i],D,f) - kappa[i]); 
-				double tmp = c1b * exp(-0.5*z1*z1*lb*kappa[i]-self_energy[i]);
-				std::cout << self_energy[i] << std::endl; 
-				error += pow(cation[i] - tmp, 2);
-				cation[i] = tmp;
-				anion[i] = c2b * exp(-0.5*z2*z2*lb*kappa[i]-self_energy[i]);
-				psi[i] = 0;
+				if (HS(i,num_points,sys.D,sys.diam2))
+					p.rho2[i]=0;
+				else 
+					p.rho2[i] = sys.c2b * exp(-0.5*sys.z2*sys.z2*sqrt(kappab2) + sys.z2*p.psi[i] - p.self_energy[i]);
+
+				//fprintf(debug,"%f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i],p.rho2[i],p.kappa2[i],p.self_energy[i],p.psi); 
 			}
+			error /= num_points;
+//			std::cout << "WKB ERROR IS " << error << std::endl;
 		}	
 
 
+		double *dpsi = new double[num_points]; //derivative of psi 
+		dpsi[0] = (p.psi[1]-p.psi[0])/sys.D/(num_points+1);
+		for (int i=1;i<num_points-1;i++)
+			dpsi[i] = (p.psi[i+1]-p.psi[i-1])/(2.*sys.D/(num_points+1));
+		dpsi[num_points-1] = (p.psi[num_points-1]-p.psi[num_points-2])/sys.D/(num_points+1);
+
+//		std::cout << "..... computed derivative of psi" << std::endl;
+
+		double G = 0;//total grand energy beta*G
+		//potential is 1/8pi * dpsi/dz 
 		for (int i=0;i<num_points;i++)
-			output << getpos(i,num_points,D) << " " << cation[i] << " " << anion[i] << std::endl;
+		{
+ //           std::cout << "-------------------------" << std::endl;
+//			G += 1./8./M_PI *pow(dpsi[i],2);
+//			std::cout << "added psi " << G << std::endl;
 
+			if (!HS(i,num_points,sys.D,sys.diam1))
+				G += p.rho1[i]*(log(p.rho1[i]/sys.c1b)+0.5*sys.z1*sys.z1*sqrt(kappab2) - 1);
+			if (!HS(i,num_points,sys.D,sys.diam2))
+				G += p.rho2[i]*(log(p.rho2[i]/sys.c2b)+0.5*sys.z2*sys.z2*sqrt(kappab2) - 1);
 
+//			std::cout << "added rho " << G << std::endl;
+//			std::cout << ".......took log of " << p.rho2[i]/sys.c2b << std::endl;
+			G += Ffl(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f);
+//			std::cout << "added ffl " << G << std::endl;
+		}
+//		std::cout << "..... computed energy G" << std::endl;
+		
+		fprintf(fenergy,"%f %f %f\n",sys.D,G*sys.D/num_points,-0.5*sys.z2*sys.z2*sqrt(kappab2)-0.5*sys.z1*sys.z1*sqrt(kappab2));
+        fflush(fenergy);
+
+		for (int i=0;i<num_points;i++)
+			if (getpos(i,num_points,sys.D) + sys.D/2 > sys.lb && sys.D/2 - getpos(i,num_points,sys.D) + sys.D/2 > sys.lb) 
+				fprintf(output,"%f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i],p.self_energy[i]+0.5*sqrt(p.kappa2[i])*sys.lb);		
+
+		fclose(output);
 	}
-
+//	std::cout << "terminated succesfully" << std::endl;
+	exit(0);
 }
 
 	

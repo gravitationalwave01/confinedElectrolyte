@@ -1,16 +1,18 @@
 //compilation:
-// g++ -L/usr/bin/ -llapack -lopenblas PB_solver.cpp -o PB_solver
+// g++ -L/usr/bin/ -llapack -lopenblas -c PB_solver.cpp -o PB_solver.o
 
 //This code solves the poisson-boltzmann equation for a system of two plates seperated by an ionic solution
-//Physical parameters are hard-coded, so changing the system requires recompilation (for now)
+//At the moment, the plates must have opposite charge. This is easily changed by 
+//  setting b[dim-1] = +boundary rather than -boundary
+//Physical parameters are passed in via structures 
 //Matrix inversion is done with LAPACK, when compiling you must link to LAPACK and BLAS
-//compile with: g++ PB_solver.cpp -llapack -lblas -o ./solver
 
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <math.h>
 #include <sstream>
+#include "PB_solver.h"
 
 #define USE_MATH_DEFINES
 
@@ -21,140 +23,102 @@ extern "C" void dgtsv_(int* N, int* NRHS, double* DL, double* D, double* DU, dou
 //this function solves the equation Ax=B, where A is the laplacian matrix, x is the electric potential, B is the charge density
 //this equation must be solved iteratively until convergence
 //the meanings of the variables are specified in main
-//TODO: group the system variables into one struct (so that I don't pass them individually)
-double iterate(int dim, double *psi, double *d, double *du, double *dl, double *b, double *rho1, double *rho2, double *kappa2, double boundary, double c1b, double c2b, double z1, double z2, double delta, int *b_cols, int *b_rows)
+double iterate(params *sys, axb *solver, profile *p)
 {
 	int info = 0; // error code for dgtsv_
-	dgtsv_(&dim, b_cols, dl, d, du, b, b_rows, &info); //call to lapack to solve Ax=b. Solution is stored in b vector.
+	dgtsv_(&solver->dim, &solver->b_cols, solver->dl, solver->d, solver->du, solver->b, &solver->b_rows, &info); //call to lapack to solve Ax=b. Solution is stored in b vector.
 	if (info != 0)
 	{
-		std::cerr << "PROBLEM SOLVING Ax=B, ERROR CODE " << info << std::endl;
+		std::cerr << "CRITICAL PROBLEM SOLVING Ax=B, ERROR CODE " << info << std::endl;
+		std::cerr << " .... Please see the LAPACK DGTSV solver documentation to understand this error" << std::endl;
 		exit(1);
 	}
 		
 	//update densities & compute whether we have converged
 	double error = 0;
-	for (int i=0; i<dim; i++)
+	for (int i=0; i<solver->dim; i++)
 	{
-		error += pow(psi[i] - b[i],2); //very crude measure of convergence
-		psi[i] = b[i];
-		rho1[i] = c1b * z1 * exp(-z1*psi[i]);
-		rho2[i] = c2b * z2 * exp(z2*psi[i]);
-		kappa2[i] = 4 * M_PI * (z1*z1*rho1[i] + z2*z2*rho2[i]);
+		error += pow(solver->x[i] - solver->b[i],2); //very crude measure of convergence
+		solver->x[i] = solver->b[i];
+		p->rho1[i] = sys->c1b * sys->z1 * exp(-sys->z1*solver->x[i]);
+		p->rho2[i] = sys->c2b * sys->z2 * exp(sys->z2*solver->x[i]);
+		p->kappa2[i] = 4 * M_PI * (sys->z1*sys->z1*p->rho1[i] + sys->z2*sys->z2*p->rho2[i]);
 	}
-
+	error /= solver->dim;
+	
 	//dgtsv_ overwrites the d,dl, and du arrays -- we need to repopulate them.
-	for (int i=0;i<dim-1;i++)
+	for (int i=0;i<solver->dim-1;i++)
 	{
-		d[i] = -2.-kappa2[i]*delta*delta; 
-		dl[i] = 1.;
-		du[i] = 1.;
+		solver->d[i] = -2.-p->kappa2[i]*sys->delta*sys->delta; 
+		solver->dl[i] = 1.;
+		solver->du[i] = 1.;
 	}
-	d[0] = -1. - kappa2[0]*delta*delta;
-	d[dim-1] = -1. - kappa2[dim-1]*delta*delta;
+	solver->d[0] = -1. - p->kappa2[0]*sys->delta*sys->delta;
+	solver->d[solver->dim-1] = -1. - p->kappa2[solver->dim-1]*sys->delta*sys->delta;
 
 	//update the RHS
-	for (int i=0; i<dim;i++)
-		b[i] = delta*delta*(4.*M_PI*(rho2[i] - rho1[i]) - kappa2[i]*psi[i]);
-	b[0] = boundary;
-	b[dim-1] =  -boundary; 
+	for (int i=0; i<solver->dim;i++)
+		solver->b[i] = sys->delta*sys->delta*(4.*M_PI*(p->rho2[i] - p->rho1[i]) - p->kappa2[i]*solver->x[i]);
+	solver->b[0] = sys->boundary;
+	solver->b[solver->dim-1] =  -sys->boundary; 
 
 	return error;
 }
 
 
-
-
-
-int main()
+int PB_solver(params* sys, profile* p, int num_points)
 {
-	//Start by initializing some system parameters and constants:
-    double z1 = 1.; //cation valancy 
-    double z2 = 1.; //anion valancy
-    double c1b = 1e-1; //bulk concentration of cations (M)
-    double c2b = 1e-1; //bulk concentration of anions (M)
-    double kb = 1.3806e-23; //boltzmann constant (m^2kgs^-2K^-1)
-    double T = 300.; //temperature (K)
-    double beta = 1/(kb*T); // 1/kT @ T=300K (1/J)
-    double dielec = 1. * 8.85418e-12; // dielectric constant(F/m) for water
-    double e_charge = 1.60218e-19; //electron charge (coulombs)
-    double Av = 6.022e23; //avogadro's number
-    double lb = beta*pow(e_charge,2)/(4*M_PI*dielec); //bjerrum length in bulk (m)
-	double sigma = 1.60218e-4; //plate surface charge (C/m^2) 
-	double D = 4.e-9; //plate seperation (m)
-    
-	//First: make all physical quantities unitless
-	// make the concentrations unitless 
-    c1b *= 1.e3 * Av * lb*lb*lb;
-    c2b *= 1.e3 * Av * lb*lb*lb;
+	std::cout << "entered PB solver" << std::endl;
+	axb solver;
+    solver.dim = num_points; //spatial discretization: number of steps between the plates
+	solver.b_cols=1; // for lapack solver
+	solver.b_rows=solver.dim; //for lapack solver
+	solver.dl=new double[solver.dim-1];  //subdiagonal of A
+	solver.d=new double[solver.dim];   //diagonal of A
+	solver.du=new double[solver.dim-1];  //superdiagonal of A
+	solver.b=new double[solver.dim];   //RHS (total charge density)
+	solver.x=p->psi; //Ax=b. The x is the electric potential
+							//note: we are assigning the pointer rather than copying
 
-	//make the charge density unitless:
-	sigma *= pow(lb,2) / e_charge;
-
-	//make seperation dimensionless:
-	D /= lb;
+	sys->delta = sys->D / (solver.dim - 1); // discretization step size between the plates
+	sys->boundary = 4. * M_PI * sys->delta * sys->sigma; // term for the discontinuity at the surface 
 
 
-    int dim = 500; //spatial discretization: number of steps between the plates
-	int b_cols = 1; // for lapack solver
-	int b_rows = dim;
+	
 
-    //initialize variables for the Ax=B solver
-	//A is tridiagonal matrix and will be stored in sparse format
-	double *dl;  //subdiagonal of A
-	double *d;   //diagonal of A
-	double *du;  //superdiagonal of A
-	double *b;   //RHS (total charge density)
-	double *psi; // electric potential 
-	double *rho1, *rho2; //density of cations/anions
-	double *kappa2; //screening length squared
-	dl = new double[dim-1]; 
-	du = new double[dim-1]; 
-	d = new double[dim]; 
-	b = new double[dim];
-	psi = new double[dim];
-	rho1 = new double[dim];
-	rho2 = new double[dim];
-	kappa2 = new double[dim];
 
 	bool diverge = false;
-	double sigma_var = sigma;
-	std::ofstream cap("cap.dat");
-	int num_iter = 1000;
-	for (int iter=0;iter<num_iter;iter++)
+	//for (int iter=0;iter<num_iter;iter++)
 	{
 		diverge = false;
-		sigma_var = sigma * iter * 0.1; 
-		std::cout << sigma_var << std::endl;
-		double delta = D / (dim - 1); // discretization step size between the plates
-		double boundary = 4. * M_PI * delta * sigma_var; // term for the discontinuity at the surface 
 
 		//now we initialize the laplacian and the b vector
 		//our first guess for the potential psi is psi increases linearly from one plate to the other 
-		for (int i=0;i<dim;i++)
+		for (int i=0;i<solver.dim;i++)
 		{
-			psi[i] = -sigma_var*D/2. + i*delta*sigma_var;
-			rho1[i] = c1b * z1 * exp(-z1*psi[i]);
-			rho2[i] = c2b * z2 * exp(z2*psi[i]);
-			kappa2[i] = 4 * M_PI * (z1*z1*rho1[i] + z2*z2*rho2[i]);
-			d[i] = -2. - kappa2[i]*delta*delta; //we subtract kappa2*psi from both sides of the equation to avoid singular matrix
-			b[i] = delta*delta*(4.*M_PI*(rho2[i] - rho1[i]) - kappa2[i]*psi[i]); 
+			//solver.x points to sys.psi (it's the electric potential)
+			solver.x[i] = -sys->sigma*sys->D/2. + i*sys->delta*sys->sigma;
+			p->rho1[i] = sys->c1b * sys->z1 * exp(-sys->z1*solver.x[i]);
+			p->rho2[i] = sys->c2b * sys->z2 * exp(sys->z2*solver.x[i]);
+			p->kappa2[i] = 4 * M_PI * (sys->z1*sys->z1*p->rho1[i] + sys->z2*sys->z2*p->rho2[i]);
+			solver.d[i] = -2. - p->kappa2[i]*sys->delta*sys->delta; //we subtract kappa2*psi from both sides of the equation to avoid singular matrix
+			solver.b[i] = sys->delta*sys->delta*(4.*M_PI*(p->rho2[i] - p->rho1[i]) - p->kappa2[i]*solver.x[i]); 
 		}
 		
-		for (int i=0;i<dim-1;i++)
+		for (int i=0;i<solver.dim-1;i++)
 		{
 			//Now we build the laplacian matrix
-			du[i] = 1.;
-			dl[i] = 1.; 
+			solver.du[i] = 1.;
+			solver.dl[i] = 1.; 
 		}
 
 
 		//now we incorporate the boundary conditions:	
-		d[0] = -1.-kappa2[0]*delta*delta;  //again, subtracting kappa2*psi from both sides to avoid singularity
-		d[dim-1] = -1.-kappa2[dim-1]*delta*delta; 
+		solver.d[0] = -1.-p->kappa2[0]*sys->delta*sys->delta;  //again, subtracting kappa2*psi from both sides to avoid singularity
+		solver.d[solver.dim-1] = -1.-p->kappa2[solver.dim-1]*sys->delta*sys->delta; 
 		
-		b[0] = boundary;
-		b[dim-1] = -boundary; 
+		solver.b[0] = sys->boundary;
+		solver.b[solver.dim-1] = -sys->boundary; 
 
 		//below is the main loop of the code
 		//basically, just solve Ax=B repeatedly until x stops changing (this change is measured by variable error)
@@ -162,17 +126,22 @@ int main()
 		int numiter = 0;
 		while (error > 1.e-12 || numiter < 8) //for sanity I insist on >8 iterations. Technically unneccessary
 		{
-			//for (int i=0; i<dim;i++)//debugging
-			//	std::cout << -D/2+i*delta << " " << rho1[i] << " " << rho2[i] << " " << psi[i] << " " << b[i] << std::endl;
+			//for (int i=0; i<solver.dim;i++)//debugging
+			//	std::cout << -D/2+i*delta << " " << p->rho1[i] << " " << p->rho2[i] << " " << psi[i] << " " << b[i] << std::endl;
 
-			if (numiter >= 1) std::cout <<"error is " << error <<std::endl;
+		//	if (numiter >= 1) std::cout <<"error is " << error <<std::endl;
 
-			error = iterate(dim, psi, d, du, dl, b, rho1, rho2, kappa2, boundary, c1b, c2b, z1, z2, delta, &b_cols, &b_rows);
+			error = iterate(sys, &solver, p);
 			if (numiter >= 50) {diverge = true; std::cerr << "large error  -- system diverges " << std::endl; break;} //TODO: catch and resolve divergences better
 			numiter++;
 		}
+		if (diverge)
+		{
+			std::cerr << "CRITICAL ERROR: PB equation solver diverged. Computation aborted." << std::endl;
+			exit(1);
+		}
 
-
+/*
 		if (!diverge)
 		{
 			//output results
@@ -180,19 +149,19 @@ int main()
 			std::stringstream ss;
 			ss << "./output/density_potential_" << iter << ".dat";
 			std::ofstream output(ss.str().c_str());
-			for (int i=0;i<dim;i++)
-				output << -D*lb/2+i*delta*lb << " " << rho1[i] << " " << rho2[i] << " " << psi[i]*kb*T/e_charge << " " << std::endl;
-			cap << sigma_var*e_charge/pow(lb,2) << " " << sigma_var*e_charge/pow(lb,2)/((psi[dim-1]-psi[1])*kb*T/e_charge) << std::endl;
+			for (int i=0;i<solver.dim;i++)
+				output << -sys->D*sys->lb/2+i*sys->delta*sys->lb << " " << p->rho1[i] << " " << p->rho2[i] << " " << solver.x[i]*kb*T/e_charge << " " << std::endl;
+			cap << sys->sigma*e_charge/pow(sys->lb,2) << " " << sys->sigma*e_charge/pow(sys->lb,2)/((solver.x[solver.dim-1]-solver.x[1])*kb*T/e_charge) << std::endl;
 		}
+*/
 
 	}
 
 
-	delete [] dl;
-	delete [] du;
-	delete [] d;
-	delete [] b;
-	delete [] psi;
+	delete [] solver.dl;
+	delete [] solver.du;
+	delete [] solver.d;
+	delete [] solver.b;
 
     return(0);
 }
