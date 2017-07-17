@@ -29,7 +29,7 @@ double getpos(int i, int num_points, double D) //units of lb or ion diameter
 //returns true of the given index is within a half-diameter of the wall
 bool HS(int index, int num_points, double D, double diam)
 {
-	return (D/2. - fabs(getpos(index,num_points,D)) < diam/2.);
+	return (D/2. - fabs(getpos(index,num_points,D)) < diam/2. - 1e-12);
 }
 
 
@@ -39,7 +39,7 @@ double Jkx(double x, double kappa,double D, double f)
 	double ans = 0; //This represents the sum (eq 7 in Rui's 2013 paper). We include enough terms in the sum so that it converges
 	double oldJkx = 1;
 	int m=1;
-	while (m < 10 || fabs(ans-oldJkx) > 1.0e-10)
+	while (m < 10 || fabs(ans-oldJkx) > 1.0e-12)
 	{
 		//std::cout << m*D + 2*x << std::endl;
 		oldJkx = ans;
@@ -60,7 +60,7 @@ double Jkx(double x, double kappa,double D, double f)
 double Ffl(double x, double kappa, double D, double f)
 {
 	double Ffl = 0;
-	double numsteps = 400.0;
+	double numsteps = 500.0;
 	double dalpha = 1.0/(numsteps+1.0);
 	int counter =0;
 	for (double alpha = 0; alpha < 1; alpha += dalpha)
@@ -155,7 +155,7 @@ int main()
 		fprintf(output,"pos      rho1       rho2       psi       u      kappa\n");
 	
 
-		int num_points=(int)(sys.D*2.*5.); //spatial discretization
+		int num_points=(int)round(sys.D*2.*5.+1.); //spatial discretization
 		std::cout << "num_points is " << num_points << std::endl;
 		std::cout << "Exclusion zone ends at " << -sys.D/2.0+sys.diam1/2.0 << std::endl;
 
@@ -196,15 +196,6 @@ int main()
 		while (error > 1.e-12 || counter < 5)
 		{
 		    counter++;
-/*
-		std::stringstream fuck;
-		fuck << "./output/debug" << counter  << ".out";
-		FILE* debug;
-		debug = fopen(fuck.str().c_str(),"w");
-		fprintf(debug,"pos  rho1   rho2   kappa2  u     psi\n");
-
-			fprintf(debug," ..... new iteration .......\n");
-*/
 			
 			//Solve modified PB equation
 			PB_solver(&sys,&p,num_points);
@@ -234,7 +225,7 @@ int main()
 				else 
 					tmp = 0.5*sys.z1*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i])); 
 	
-				error += pow(p.self_energy1[i] - tmp, 2);
+				error += pow(p.self_energy1[i] - tmp, 2);//error is the change in self energy from one iteration to the next
 				p.self_energy1[i] = tmp;
 				if (HS(i,num_points,sys.D,sys.diam1))
 					p.self_energy2[i] = 0;
@@ -262,7 +253,7 @@ int main()
 		for (int i=0;i<num_points;i++)
 		{
  //           std::cout << "-------------------------" << std::endl;
-			G += 1./8./M_PI *pow(dpsi[i],2);
+//			G += 1./8./M_PI *pow(dpsi[i],2);
 //			std::cout << "added psi " << G << std::endl;
 
 			if (!HS(i,num_points,sys.D,sys.diam1))
@@ -278,7 +269,7 @@ int main()
 		}
 //		std::cout << "..... computed energy G" << std::endl;
 		
-		fprintf(fenergy,"%f %f %f\n",sys.D,G*sys.D/num_points,-0.5*sys.z2*sys.z2*sqrt(kappab2)-0.5*sys.z1*sys.z1*sqrt(kappab2));
+		fprintf(fenergy,"%f %f %f\n",sys.D,G*sys.D/(num_points+1),-0.5*sys.z2*sys.z2*sqrt(kappab2)-0.5*sys.z1*sys.z1*sqrt(kappab2));
         fflush(fenergy);
 
 		for (int i=0;i<num_points;i++)
