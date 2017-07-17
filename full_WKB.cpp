@@ -13,15 +13,33 @@
 
 
 // compile with:
-// g++ -I/usr/lib -llapack -lopenblas full_WKB.cpp PB_solver.cpp -o ./full_WKB
+// g++ -std=c++11 -I/usr/lib -llapack -lopenblas full_WKB.cpp PB_solver.cpp -o ./full_WKB
 extern "C" void dgtsv_(int* N, int* NRHS, double* DL, double* D, double* DU, double* B, int* LDB, int* INFO);
+
+
+//The plate seperation is D
+//We never want to evaluate at the plate wall
+//getpos converts the index position i into a position
+//between the plates (evenly spaced)
+double getpos(int i, int num_points, double D) //units of lb or ion diameter
+{
+	return (-D/2.0 + (double)(i) / ((double)num_points-1.) * D);
+}
+	
+//returns true of the given index is within a half-diameter of the wall
+bool HS(int index, int num_points, double D, double diam)
+{
+	return (D/2. - fabs(getpos(index,num_points,D)) < diam/2.);
+}
+
+
 
 double Jkx(double x, double kappa,double D, double f)
 {
 	double ans = 0; //This represents the sum (eq 7 in Rui's 2013 paper). We include enough terms in the sum so that it converges
 	double oldJkx = 1;
 	int m=1;
-	while (m < 10 || fabs(ans-oldJkx) > 1.0e-9)
+	while (m < 10 || fabs(ans-oldJkx) > 1.0e-10)
 	{
 		//std::cout << m*D + 2*x << std::endl;
 		oldJkx = ans;
@@ -42,7 +60,7 @@ double Jkx(double x, double kappa,double D, double f)
 double Ffl(double x, double kappa, double D, double f)
 {
 	double Ffl = 0;
-	double numsteps = 200.0;
+	double numsteps = 400.0;
 	double dalpha = 1.0/(numsteps+1.0);
 	int counter =0;
 	for (double alpha = 0; alpha < 1; alpha += dalpha)
@@ -55,20 +73,6 @@ double Ffl(double x, double kappa, double D, double f)
 	return kappa*kappa * Ffl * dalpha / (4*M_PI);
 }	
 
-//The plate seperation is D
-//We never want to evaluate at the plate wall
-//getpos converts the index position i into a position
-//between the plates (evenly spaced)
-double getpos(int i, int num_points, double D) //units of lb
-{
-	return (-D/2.0 + (double)(i+1) / ((double)num_points+1.) * D);
-}
-	
-//returns true of the given index is within a half-diameter of the wall
-bool HS(int index, int num_points, double D, double diam)
-{
-	return (D/2. - fabs(getpos(index,num_points,D)) < diam/2.);
-}
 
 int main()
 {
@@ -81,6 +85,8 @@ int main()
     double Av = 6.022e23; //avogadro's number
 	
 	params sys;
+	bool point_charge = false; //set to true if you want point charges
+							   //length unit is then the bjerrum length
     sys.z1 = 1.; //cation valancy 
     sys.z2 = 1.; //anion valancy
 	sys.diam1 = 5.e-10; //diameter of ions [for repulsion from wall]
@@ -92,34 +98,29 @@ int main()
 	sys.D = 3.e-9; //plate seperation (m)
 
 	//First: make all physical quantities unitless
+	double lu = std::min(sys.diam1,sys.diam2);
+	if (point_charge) lu = sys.lb;
+
 	// make the concentrations unitless 
-    sys.c1b *= 1.e3 * Av * sys.lb*sys.lb*sys.lb;
-    sys.c2b *= 1.e3 * Av * sys.lb*sys.lb*sys.lb;
+    sys.c1b *= 1.e3 * Av * lu*lu*lu;
+    sys.c2b *= 1.e3 * Av * lu*lu*lu;
 
 	//make the charge density unitless:
-	sys.sigma *= pow(sys.lb,2) / e_charge;
+	sys.sigma *= pow(lu,2) / e_charge;
 
 	//make seperation and ion radii dimensionless:
-	sys.D /= sys.lb;
-	sys.diam1 /= sys.lb;
-	sys.diam2 /= sys.lb;
+	sys.D /= lu;
+	sys.diam1 /= lu;
+	sys.diam2 /= lu;
 
 //	std::cout << "lb is " << sys.lb << std::endl;
 //	std::cout << "D is " << sys.D << std::endl;
-//	std::cout << "diameter is " << sys.diam1 << std::endl;
+	std::cout << "diameter1 is " << sys.diam1 << std::endl;
+	std::cout << "diameter2 is " << sys.diam2 << std::endl;
 
-	int num_points=10000; //spatial discretization
-
-	profile p;
-	p.rho1 = new double[num_points];
-	p.rho2 = new double[num_points];
-	p.greens = new double[num_points];
-	p.psi = new double[num_points];
-	p.self_energy = new double[num_points];
-	p.kappa2 = new double[num_points];
 
 	double epsilS = 80.;
-	double epsilP = 1.;
+	double epsilP = 2.5;
 	double kappab2 = 4*M_PI*(sys.z1*sys.z1 * sys.c1b + sys.z2*sys.z2 * sys.c2b); //bulk inverse screening length 
 
 
@@ -133,7 +134,7 @@ int main()
 	//6) compute the resulting pressure dG/dD
 
 	FILE* fenergy;
-	fenergy = fopen("./output/pressure/rep_image/total_energy.dat","w");
+	fenergy = fopen("./output/test/total_energy.dat","w");
 	fprintf(fenergy,"seperation    energy \n");
 	double sigma_init = sys.sigma;
 	double c1b_init = sys.c1b;
@@ -141,30 +142,50 @@ int main()
 	double f = (epsilS - epsilP)/(epsilS + epsilP);
 	//for (sys.D = 1.; sys.D < 30; sys.D += 1.) //D is unitless (multiples of lb)
 	//for (sys.sigma = -sigma_init*10; sys.sigma < sigma_init * 10; sys.sigma += sigma_init*0.1)
-    for (sys.D = 0.7; sys.D < 20; sys.D += 0.1)
+    for (sys.D = 1.5; sys.D < 20; sys.D += 0.1) //in units of ion diameter (or bjerrum length)
 	{
         std::cout << "D is " << sys.D << std::endl;
+	
+		//open the output file: (TODO: generate the required directories)
 		std::stringstream ss;
-		ss << "./output/pressure/rep_image/ion_profile_D" << cursig << ".dat" ;
+		ss << "./output/test/ion_profile_D" << cursig << ".dat" ;
 		cursig++;
 		FILE* output;
 		output = fopen(ss.str().c_str(),"w");
-		fprintf(output,"pos          rho1           rho2           psi           u\n");
+		fprintf(output,"pos      rho1       rho2       psi       u      kappa\n");
+	
+
+		int num_points=(int)(sys.D*2.*5.); //spatial discretization
+		std::cout << "num_points is " << num_points << std::endl;
+		std::cout << "Exclusion zone ends at " << -sys.D/2.0+sys.diam1/2.0 << std::endl;
+
+		profile p;
+		p.rho1 = new double[num_points];
+		p.rho2 = new double[num_points];
+		p.greens = new double[num_points];
+		p.psi = new double[num_points];
+		p.self_energy1 = new double[num_points];
+		p.self_energy2 = new double[num_points];
+		p.kappa2 = new double[num_points];
 		
 		//first guess:
 		for (int i=0;i<num_points;i++)
 		{
-			p.kappa2[i] = kappab2; 
-			p.self_energy[i] = 0.5*(Jkx(getpos(i,num_points,sys.D),sqrt(kappab2),sys.D,f) - sqrt(kappab2));
+
 			if (HS(i,num_points,sys.D,sys.diam1))
 				p.rho1[i]=0;
 			else 
-				p.rho1[i] = sys.c1b * exp(-0.5*sys.z1*sys.z1*sqrt(kappab2)-p.self_energy[i]);
+				p.rho1[i] = sys.c1b;
 			
 			if (HS(i,num_points,sys.D,sys.diam2))
 				p.rho2[i]=0;
 			else 
-				p.rho2[i] = sys.c2b * exp(-0.5*sys.z2*sys.z2*sqrt(kappab2)-p.self_energy[i]);
+				p.rho2[i] = sys.c2b;
+
+			p.kappa2[i] = 4*M_PI*(sys.z1*sys.z1 * p.rho1[i] + sys.z2*sys.z2 * p.rho2[i]);
+
+			p.self_energy1[i] = 0.5*sys.z1*sys.z1*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
+			p.self_energy2[i] = 0.5*sys.z2*sys.z2*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
 			
 			p.psi[i] = 0;
 		}
@@ -184,31 +205,50 @@ int main()
 
 			fprintf(debug," ..... new iteration .......\n");
 */
+			
+			//Solve modified PB equation
 			PB_solver(&sys,&p,num_points);
+
+			// We now have psi, rho1, rho2, kappa2 all populated with solutions to the PB equation
+			// Now we guess new rho1 and rho2 by taking into account self energy and the psi from PB equation
 			error = 0;
 			for (int i=0;i<num_points;i++)
 			{
-				double tmp = 4*M_PI*(sys.z1*sys.z1*p.rho1[i]+sys.z2*sys.z2*p.rho2[i]);
-				error += pow(p.kappa2[i] - tmp, 2);
-				p.kappa2[i] = tmp;
-				p.self_energy[i] = 0.5*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i])); 
+				//compute new charge densities
 				if (HS(i,num_points,sys.D,sys.diam1))
 					p.rho1[i]=0;
 				else 
-					p.rho1[i] = sys.c1b * exp(-0.5*sys.z1*sys.z1*sqrt(kappab2) - sys.z2*p.psi[i]- p.self_energy[i]);;
+					p.rho1[i] = sys.c1b * exp(-0.5*sys.z1*sys.z1*sqrt(kappab2) - sys.z1*p.psi[i]- p.self_energy1[i]);;
 			
 				if (HS(i,num_points,sys.D,sys.diam2))
 					p.rho2[i]=0;
 				else 
-					p.rho2[i] = sys.c2b * exp(-0.5*sys.z2*sys.z2*sqrt(kappab2) + sys.z2*p.psi[i] - p.self_energy[i]);
+					p.rho2[i] = sys.c2b * exp(-0.5*sys.z2*sys.z2*sqrt(kappab2) + sys.z2*p.psi[i] - p.self_energy2[i]);
 
-				//fprintf(debug,"%f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i],p.rho2[i],p.kappa2[i],p.self_energy[i],p.psi); 
+				p.kappa2[i] = 4*M_PI*(sys.z1*sys.z1 * p.rho1[i] + sys.z2*sys.z2 * p.rho2[i]);
+
+				//compute the new self energy (error is computed as the change in self energy from last iteration)
+				double tmp;
+				if (HS(i,num_points,sys.D,sys.diam1))
+					tmp = 0;
+				else 
+					tmp = 0.5*sys.z1*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i])); 
+	
+				error += pow(p.self_energy1[i] - tmp, 2);
+				p.self_energy1[i] = tmp;
+				if (HS(i,num_points,sys.D,sys.diam1))
+					p.self_energy2[i] = 0;
+				else 
+					p.self_energy2[i] = 0.5*sys.z2*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i])); 
+
+
 			}
 			error /= num_points;
-//			std::cout << "WKB ERROR IS " << error << std::endl;
+			std::cout << "WKB ERROR IS " << error << std::endl;
 		}	
-
-
+		
+		//Now we have self consistently determined self energy, kappa2, rho1, rho2
+		//Next compute the total grand energy (per unit area) using a charging integral (see Rui's 2013 WKB paper).
 		double *dpsi = new double[num_points]; //derivative of psi 
 		dpsi[0] = (p.psi[1]-p.psi[0])/sys.D/(num_points+1);
 		for (int i=1;i<num_points-1;i++)
@@ -222,7 +262,7 @@ int main()
 		for (int i=0;i<num_points;i++)
 		{
  //           std::cout << "-------------------------" << std::endl;
-//			G += 1./8./M_PI *pow(dpsi[i],2);
+			G += 1./8./M_PI *pow(dpsi[i],2);
 //			std::cout << "added psi " << G << std::endl;
 
 			if (!HS(i,num_points,sys.D,sys.diam1))
@@ -232,7 +272,8 @@ int main()
 
 //			std::cout << "added rho " << G << std::endl;
 //			std::cout << ".......took log of " << p.rho2[i]/sys.c2b << std::endl;
-			G += Ffl(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f);
+			if (!HS(i,num_points,sys.D,sys.diam2)) // WARNING: THIS ONLY WORKS WHEN DIAMETERS ARE THE SAME!!!
+				G += Ffl(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f);
 //			std::cout << "added ffl " << G << std::endl;
 		}
 //		std::cout << "..... computed energy G" << std::endl;
@@ -241,10 +282,16 @@ int main()
         fflush(fenergy);
 
 		for (int i=0;i<num_points;i++)
-			if (getpos(i,num_points,sys.D) + sys.D/2 > sys.lb && sys.D/2 - getpos(i,num_points,sys.D) + sys.D/2 > sys.lb) 
-				fprintf(output,"%f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i],p.self_energy[i]+0.5*sqrt(p.kappa2[i])*sys.lb);		
+			fprintf(output,"%f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i], p.self_energy1[i]+0.5*sqrt(p.kappa2[i])*sys.lb, p.kappa2[i]);		
 
 		fclose(output);
+	delete [] p.rho1;
+	delete [] p.rho2;
+	delete [] p.greens;
+	delete [] p.psi;
+	delete [] p.self_energy1;
+	delete [] p.self_energy2;
+	delete [] p.kappa2;
 	}
 //	std::cout << "terminated succesfully" << std::endl;
 	exit(0);

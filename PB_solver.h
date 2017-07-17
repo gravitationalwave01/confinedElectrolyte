@@ -3,6 +3,12 @@
 #ifndef _PB_solver // must be unique name in the project
 #define _PB_solver
 
+
+
+/*     Some helpful structures:      */
+
+
+
 //Structure containing all of the physical parameters of the system
 struct params{
 	//all of the physical parameters of the system:
@@ -26,7 +32,8 @@ struct params{
 struct profile{
 	double *rho1; //cation density
 	double *rho2; //anion density
-	double *self_energy; //
+	double *self_energy1; //
+	double *self_energy2; //
 	double *greens; //spatial greens function
 	double *psi;
 	double *kappa2;
@@ -49,6 +56,9 @@ struct axb{
 
 
 int PB_solver(params* sys, profile* p, int num_points); // prototype declaration of the function in a.cpp
+
+
+
 
 #endif 
 
