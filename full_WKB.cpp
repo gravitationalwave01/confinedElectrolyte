@@ -3,6 +3,8 @@
 #include<math.h>
 #include<sstream>
 #include "PB_solver.h"
+#include<unistd.h>
+#include<sys/stat.h>
 
 #define _USE_MATH_DEFINES
 
@@ -91,11 +93,11 @@ int main()
     sys.z2 = 1.; //anion valancy
 	sys.diam1 = 5.e-10; //diameter of ions [for repulsion from wall]
 	sys.diam2 = 5.e-10;
-    sys.c1b = 1.e-3; //bulk concentration of cations (M)
-    sys.c2b = 1.e-3; //bulk concentration of anions (M)
+    sys.c1b = 1.e-4; //bulk concentration of cations (M)
+    sys.c2b = 1.e-4; //bulk concentration of anions (M)
     sys.lb = beta*pow(e_charge,2)/(4*M_PI*dielec); //bjerrum length in bulk (m)
-	sys.sigma = 0.; //plate surface charge (C/m^2) 
-	sys.D = 3.e-9; //plate seperation (m)
+	sys.sigma = 1.6021e-4; //plate surface charge (C/m^2) 
+	sys.D = 4.e-9; //plate seperation (m)
 
 	//First: make all physical quantities unitless
 	double lu = std::min(sys.diam1,sys.diam2);
@@ -107,6 +109,7 @@ int main()
 
 	//make the charge density unitless:
 	sys.sigma *= pow(lu,2) / e_charge;
+	std::cout << "surface charge is " << sys.sigma << std::endl;
 
 	//make seperation and ion radii dimensionless:
 	sys.D /= lu;
@@ -132,23 +135,64 @@ int main()
 	//4) repeat 2 and 3 until convergence
 	//5) compute the resulting free energy per area G
 	//6) compute the resulting pressure dG/dD
+	
+	//for (sys.D = 1.; sys.D < 30; sys.D += 1.) //D is unitless (multiples of lb)
+    //for (sys.D = 1.1; sys.D < 20; sys.D += 0.1) //in units of ion diameter (or bjerrum length)
+	for (int cb_counter=0;cb_counter < 4; cb_counter++)
+	{
+	
+	for (int epsil_counter = 0;epsil_counter < 3;epsil_counter++)
+	{
+	if (epsil_counter == 0) 
+		epsilP = 2.5;
+	else if (epsil_counter == 1) 
+		epsilP = 80.;
+	else if (epsil_counter == 2)
+		epsilP = 10000.;
+	else break;
+	std::cout << "CURRENT EPSILP IS " << epsilP << std::endl;
+	//open the energy output file: (TODO: generate the required directories)
+	std::stringstream fss;
+	fss << "./output/cap/cb" << sys.c1b << "/";
+	mkdir(fss.str().c_str(),0700);
+	mkdir((fss.str()+"rep_image/").c_str(),0700);
+	mkdir((fss.str()+"no_image/").c_str(),0700);
+	mkdir((fss.str()+"att_image/").c_str(),0700);
+	
+	if (epsil_counter == 0) 
+		fss << "rep_image/total_energy" << epsil_counter << ".dat";
+	else if (epsil_counter == 1) 
+		fss << "no_image/total_energy" << epsil_counter << ".dat";
+	else if (epsil_counter == 2)
+		fss << "att_image/total_energy" << epsil_counter << ".dat";
+	std::cout << "WRITING TO FILE " << fss.str() << std::endl;
 
 	FILE* fenergy;
-	fenergy = fopen("./output/test/total_energy.dat","w");
+	fenergy = fopen(fss.str().c_str(),"w");
 	fprintf(fenergy,"seperation    energy \n");
 	double sigma_init = sys.sigma;
 	double c1b_init = sys.c1b;
 	int cursig = 0;
 	double f = (epsilS - epsilP)/(epsilS + epsilP);
-	//for (sys.D = 1.; sys.D < 30; sys.D += 1.) //D is unitless (multiples of lb)
-	//for (sys.sigma = -sigma_init*10; sys.sigma < sigma_init * 10; sys.sigma += sigma_init*0.1)
-    for (sys.D = 1.5; sys.D < 20; sys.D += 0.1) //in units of ion diameter (or bjerrum length)
+
+	for (sys.sigma = -sigma_init*50; sys.sigma < sigma_init * 50; sys.sigma += sigma_init*0.2)
 	{
         std::cout << "D is " << sys.D << std::endl;
 	
 		//open the output file: (TODO: generate the required directories)
 		std::stringstream ss;
-		ss << "./output/test/ion_profile_D" << cursig << ".dat" ;
+		ss << "./output/cap/cb"<<sys.c1b<<"/";
+		mkdir((ss.str().c_str()),0700);
+		mkdir((ss.str()+"rep_image/").c_str(),0700);
+		mkdir((ss.str()+"no_image/").c_str(),0700);
+		mkdir((ss.str()+"att_image/").c_str(),0700);
+		if (epsil_counter == 0) 
+			ss << "rep_image/ion_profile_s" << cursig << ".dat";
+		else if 
+			(epsil_counter == 1) ss << "no_image/ion_profile_s" << cursig << ".dat";
+		else 
+			ss << "att_image/ion_profile_s" << cursig << ".dat";
+
 		cursig++;
 		FILE* output;
 		output = fopen(ss.str().c_str(),"w");
@@ -253,19 +297,19 @@ int main()
 		for (int i=0;i<num_points;i++)
 		{
  //           std::cout << "-------------------------" << std::endl;
-//			G += 1./8./M_PI *pow(dpsi[i],2);
-//			std::cout << "added psi " << G << std::endl;
+			G += 1./8./M_PI *pow(dpsi[i],2);
+			std::cout << "added psi " << G << std::endl;
 
 			if (!HS(i,num_points,sys.D,sys.diam1))
 				G += p.rho1[i]*(log(p.rho1[i]/sys.c1b)+0.5*sys.z1*sys.z1*sqrt(kappab2) - 1);
 			if (!HS(i,num_points,sys.D,sys.diam2))
 				G += p.rho2[i]*(log(p.rho2[i]/sys.c2b)+0.5*sys.z2*sys.z2*sqrt(kappab2) - 1);
 
-//			std::cout << "added rho " << G << std::endl;
-//			std::cout << ".......took log of " << p.rho2[i]/sys.c2b << std::endl;
+			std::cout << "added rho " << G << std::endl;
+			std::cout << ".......took log of " << p.rho2[i]/sys.c2b << std::endl;
 			if (!HS(i,num_points,sys.D,sys.diam2)) // WARNING: THIS ONLY WORKS WHEN DIAMETERS ARE THE SAME!!!
 				G += Ffl(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f);
-//			std::cout << "added ffl " << G << std::endl;
+			std::cout << "added ffl " << G << std::endl;
 		}
 //		std::cout << "..... computed energy G" << std::endl;
 		
@@ -276,13 +320,17 @@ int main()
 			fprintf(output,"%f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i], p.self_energy1[i]+0.5*sqrt(p.kappa2[i])*sys.lb, p.kappa2[i]);		
 
 		fclose(output);
-	delete [] p.rho1;
-	delete [] p.rho2;
-	delete [] p.greens;
-	delete [] p.psi;
-	delete [] p.self_energy1;
-	delete [] p.self_energy2;
-	delete [] p.kappa2;
+		delete [] p.rho1;
+		delete [] p.rho2;
+		delete [] p.greens;
+		delete [] p.psi;
+		delete [] p.self_energy1;
+		delete [] p.self_energy2;
+		delete [] p.kappa2;
+	}
+	}
+	sys.c1b*=10;
+	sys.c1b*=10;
 	}
 //	std::cout << "terminated succesfully" << std::endl;
 	exit(0);

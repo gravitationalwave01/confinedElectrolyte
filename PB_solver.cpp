@@ -83,13 +83,11 @@ int PB_solver(params* sys, profile* p, int num_points)
 	solver.d=new double[solver.dim];   //diagonal of A
 	solver.du=new double[solver.dim-1];  //superdiagonal of A
 	solver.b=new double[solver.dim];   //RHS (total charge density)
-	solver.x=p->psi; //Ax=b. The x is the electric potential
-							//note: we are assigning the pointer rather than copying
 
 	sys->delta = sys->D / (solver.dim - 1); // discretization step size between the plates
 	sys->boundary = 4. * M_PI * sys->delta * sys->sigma; // term for the discontinuity at the surface 
 
-
+	std::cout << " IN PB SOLVER, BOUNDARY IS " << sys->boundary << std::endl;
 	
 	double* fake_kap2 = new double[solver.dim];
 	double first=-1; //first nonzero value of kappa2
@@ -130,7 +128,7 @@ int PB_solver(params* sys, profile* p, int num_points)
 		else
 			fake_kap2[i] = 4 * M_PI * (sys->z1*sys->z1*p->rho1[i] + sys->z2*sys->z2*p->rho2[i]);
 		solver.d[i] = -2. - fake_kap2[i]*sys->delta*sys->delta; //we subtract kappa2*psi from both sides of the equation to avoid singular matrix
-		solver.b[i] = sys->delta*sys->delta*(4.*M_PI*(p->rho2[i] - p->rho1[i]) - fake_kap2[i]*solver.x[i]); 
+		solver.b[i] = sys->delta*sys->delta*(4.*M_PI*(p->rho2[i] - p->rho1[i]) - fake_kap2[i]*p->psi[i]); 
 	}
 	
 	for (int i=0;i<solver.dim-1;i++)
@@ -155,7 +153,8 @@ int PB_solver(params* sys, profile* p, int num_points)
 		exit(1);
 	}
 
-
+	for (int i=0;i<solver.dim;i++)
+		p->psi[i] = solver.b[i];
 
 	delete [] solver.dl;
 	delete [] solver.du;
