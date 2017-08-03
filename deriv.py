@@ -6,7 +6,7 @@ import numpy as np
 fin = "total_energy.dat"
 fout = "press.dat"
 column = 1
-deg = 40 #degree of polynomial fit
+deg = 10 #degree of polynomial fit
 
 data = np.loadtxt(fin,skiprows=1)
 output = np.zeros((data.shape[0]-1,3))

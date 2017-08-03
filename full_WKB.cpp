@@ -93,14 +93,15 @@ int main()
     sys.z2 = 1.; //anion valancy
 	sys.diam1 = 5.e-10; //diameter of ions [for repulsion from wall]
 	sys.diam2 = 5.e-10;
-    sys.c1b = 1.e-4; //bulk concentration of cations (M)
-    sys.c2b = 1.e-4; //bulk concentration of anions (M)
+    sys.c1b = 1.e-2; //bulk concentration of cations (M)
+    sys.c2b = 1.e-2; //bulk concentration of anions (M)
     sys.lb = beta*pow(e_charge,2)/(4*M_PI*dielec); //bjerrum length in bulk (m)
 	sys.sigma = 1.6021e-4; //plate surface charge (C/m^2) 
-	sys.D = 4.e-9; //plate seperation (m)
+	sys.D = 10.e-9; //plate seperation (m)
 
 	//First: make all physical quantities unitless
-	double lu = std::min(sys.diam1,sys.diam2);
+	// NORMALIZATION IS DONE WRT TO THE BJERRUM LENGTH!
+	double lu = sys.lb; //std::min(sys.diam1,sys.diam2); //lu is 'length unit'
 	if (point_charge) lu = sys.lb;
 
 	// make the concentrations unitless 
@@ -124,7 +125,6 @@ int main()
 
 	double epsilS = 80.;
 	double epsilP = 2.5;
-	double kappab2 = 4*M_PI*(sys.z1*sys.z1 * sys.c1b + sys.z2*sys.z2 * sys.c2b); //bulk inverse screening length 
 
 
 	//For each plate seperation D we will:
@@ -136,9 +136,11 @@ int main()
 	//5) compute the resulting free energy per area G
 	//6) compute the resulting pressure dG/dD
 	
+	double sigma_init = sys.sigma;
+	double c1b_init = sys.c1b;
 	//for (sys.D = 1.; sys.D < 30; sys.D += 1.) //D is unitless (multiples of lb)
     //for (sys.D = 1.1; sys.D < 20; sys.D += 0.1) //in units of ion diameter (or bjerrum length)
-	for (int cb_counter=0;cb_counter < 4; cb_counter++)
+	for (int cb_counter=0;cb_counter < 1; cb_counter++)
 	{
 	
 	for (int epsil_counter = 0;epsil_counter < 3;epsil_counter++)
@@ -153,35 +155,36 @@ int main()
 	std::cout << "CURRENT EPSILP IS " << epsilP << std::endl;
 	//open the energy output file: (TODO: generate the required directories)
 	std::stringstream fss;
-	fss << "./output/cap/cb" << sys.c1b << "/";
+	//fss << "./output/cap2/cb" << std::scientific << sys.c1b << "/";
+	fss << "./output/test/";
 	mkdir(fss.str().c_str(),0700);
 	mkdir((fss.str()+"rep_image/").c_str(),0700);
 	mkdir((fss.str()+"no_image/").c_str(),0700);
 	mkdir((fss.str()+"att_image/").c_str(),0700);
-	
+
 	if (epsil_counter == 0) 
-		fss << "rep_image/total_energy" << epsil_counter << ".dat";
+		fss << "rep_image/total_energy" << ".dat";
 	else if (epsil_counter == 1) 
-		fss << "no_image/total_energy" << epsil_counter << ".dat";
+		fss << "no_image/total_energy" << ".dat";
 	else if (epsil_counter == 2)
-		fss << "att_image/total_energy" << epsil_counter << ".dat";
+		fss << "att_image/total_energy" << ".dat";
 	std::cout << "WRITING TO FILE " << fss.str() << std::endl;
 
 	FILE* fenergy;
 	fenergy = fopen(fss.str().c_str(),"w");
 	fprintf(fenergy,"seperation    energy \n");
-	double sigma_init = sys.sigma;
-	double c1b_init = sys.c1b;
 	int cursig = 0;
 	double f = (epsilS - epsilP)/(epsilS + epsilP);
+	double kappab2 = 4*M_PI*(sys.z1*sys.z1 * sys.c1b + sys.z2*sys.z2 * sys.c2b); //bulk inverse screening length 
 
-	for (sys.sigma = -sigma_init*50; sys.sigma < sigma_init * 50; sys.sigma += sigma_init*0.2)
+	for (sys.sigma = -sigma_init*150; sys.sigma < sigma_init * 150; sys.sigma += 2*sigma_init)
 	{
         std::cout << "D is " << sys.D << std::endl;
 	
 		//open the output file: (TODO: generate the required directories)
 		std::stringstream ss;
-		ss << "./output/cap/cb"<<sys.c1b<<"/";
+		//ss << "./output/cap2/cb"<< std::scientific << sys.c1b<<"/";
+		ss << "./output/test/";
 		mkdir((ss.str().c_str()),0700);
 		mkdir((ss.str()+"rep_image/").c_str(),0700);
 		mkdir((ss.str()+"no_image/").c_str(),0700);
@@ -196,7 +199,7 @@ int main()
 		cursig++;
 		FILE* output;
 		output = fopen(ss.str().c_str(),"w");
-		fprintf(output,"pos      rho1       rho2       psi       u      kappa\n");
+		fprintf(output,"pos      rho1       rho2       psi       u      kappa      sigma\n");
 	
 
 		int num_points=(int)round(sys.D*2.*5.+1.); //spatial discretization
@@ -228,12 +231,22 @@ int main()
 
 			p.kappa2[i] = 4*M_PI*(sys.z1*sys.z1 * p.rho1[i] + sys.z2*sys.z2 * p.rho2[i]);
 
-			p.self_energy1[i] = 0.5*sys.z1*sys.z1*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
-			p.self_energy2[i] = 0.5*sys.z2*sys.z2*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
+			if (HS(i,num_points,sys.D,sys.diam1))
+				p.self_energy1[i] = 0;
+			else 
+				p.self_energy1[i] = 0.5*sys.z1*sys.z1*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
+			
+			if (HS(i,num_points,sys.D,sys.diam1))
+				p.self_energy2[i] = 0;
+			else 
+				p.self_energy2[i] = 0.5*sys.z2*sys.z2*(Jkx(getpos(i,num_points,sys.D),sqrt(p.kappa2[i]),sys.D,f) - sqrt(p.kappa2[i]));
+			
 			
 			p.psi[i] = 0;
 		}
 		
+		for (int i=0;i<num_points;i++)
+			std::cout << p.self_energy1[i] << std::endl;
 		//Now we iterate:
 		double error = 1.;
 		int counter =0;
@@ -317,7 +330,7 @@ int main()
         fflush(fenergy);
 
 		for (int i=0;i<num_points;i++)
-			fprintf(output,"%f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i], p.self_energy1[i]+0.5*sqrt(p.kappa2[i])*sys.lb, p.kappa2[i]);		
+			fprintf(output,"%f %f %f %f %f %f %f\n",getpos(i,num_points,sys.D),p.rho1[i]/sys.c1b,p.rho2[i]/sys.c2b,p.psi[i], p.self_energy1[i]+0.5*sqrt(p.kappa2[i])*sys.lb, p.kappa2[i],sys.sigma);		
 
 		fclose(output);
 		delete [] p.rho1;
@@ -330,7 +343,7 @@ int main()
 	}
 	}
 	sys.c1b*=10;
-	sys.c1b*=10;
+	sys.c2b*=10;
 	}
 //	std::cout << "terminated succesfully" << std::endl;
 	exit(0);
